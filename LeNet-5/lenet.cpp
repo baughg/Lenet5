@@ -37,6 +37,22 @@ char buffer_out[256];
 sprintf(buffer_out,"(o0=%d,o1=%d,w0=%d,w1=%d) (output)[o0][o1]=%lf",o0,o1,w0,w1,(output)[o0][o1]); debug_file << buffer_out << std::endl;}\
 }
 
+void convolute_full(LeNet5 *lenet, Feature *errors, int x,int y)
+{
+  // CONVOLUTE_FULL(input,             output,            weight)
+  // CONVOLUTE_FULL(errors->layer5[y], errors->layer4[x], lenet->weight4_5[x][y])
+  int s = GETLENGTH(errors->layer5[y]); // 1
+  s = GETLENGTH(*(errors->layer5[y])); // 1
+  s = GETLENGTH(lenet->weight4_5[x][y]); // 5
+  s = GETLENGTH(*(lenet->weight4_5[x][y])); // 5
+
+  for (int i0 = 0; i0 < GETLENGTH(errors->layer5[y]); ++i0) // 1
+    for (int i1 = 0; i1 < GETLENGTH(*(errors->layer5[y])); ++i1) // 1
+      for (int w0 = 0; w0 < GETLENGTH(lenet->weight4_5[x][y]); ++w0) // 5
+        for (int w1 = 0; w1 < GETLENGTH(*(lenet->weight4_5[x][y])); ++w1) // 5
+          (errors->layer4[x])[i0 + w0][i1 + w1] += (errors->layer5[y])[i0][i1] * (lenet->weight4_5[x][y])[w0][w1];
+}
+
 #define CONVOLUTE_FULL(input,output,weight)												\
 {																						\
 	FOREACH(i0,GETLENGTH(input))														\
@@ -109,6 +125,33 @@ void convolution_forward(LeNet5 *lenet, Feature *features, double(*action)(doubl
       ((double *)features->layer1[j])[i] = action(((double *)features->layer1[j])[i] + lenet->bias0_1[j]);
 }
 
+void convolution_backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double))
+{
+  // CONVOLUTION_BACKWARD(input,            inerror,        outerror,       weight,           wd,                bd,              actiongrad)
+  // CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
+  int s = GETLENGTH(lenet->weight4_5);  // 16
+  s = GETLENGTH(*lenet->weight4_5);     // 120
+  s = GETCOUNT(errors->layer4);         // 400
+  s = GETLENGTH(errors->layer5);        // 120
+  s = GETCOUNT(errors->layer5[0]);      // 1
+
+  for (int x = 0; x < GETLENGTH(lenet->weight4_5); ++x)     // 16
+    for (int y = 0; y < GETLENGTH(*lenet->weight4_5); ++y)  // 120
+      convolute_full(lenet, errors, x, y);
+      //CONVOLUTE_FULL(errors->layer5[y], errors->layer4[x], lenet->weight4_5[x][y]);
+
+  for (int i = 0; i < GETCOUNT(errors->layer4); ++i) // 400
+    ((double *)errors->layer4)[i] *= actiongrad(((double *)features->layer4)[i]);
+
+  for (int j = 0; j < GETLENGTH(errors->layer5); ++j)     // 120
+    for (int i = 0; i < GETCOUNT(errors->layer5[j]); ++i) // 1
+      deltas->bias4_5[j] += ((double *)errors->layer5[j])[i];
+
+  for (int x = 0; x < GETLENGTH(lenet->weight4_5); ++x)     // 16
+    for (int y = 0; y < GETLENGTH(*lenet->weight4_5); ++y)  // 120
+      CONVOLUTE_VALID(features->layer4[x], deltas->weight4_5[x][y], errors->layer5[y]);
+}
+
 #define CONVOLUTION_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)\
 {																			\
 	for (int x = 0; x < GETLENGTH(weight); ++x)								\
@@ -174,6 +217,31 @@ void convolution_forward(LeNet5 *lenet, Feature *features, double(*action)(doubl
 		((double *)output)[j] = action(((double *)output)[j] + bias[j]);	\
 }
 
+void dot_product_backward(
+  LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double))
+{
+  // DOT_PRODUCT_BACKWARD(input,            inerror,        outerror,       weight,           wd,                bd,              actiongrad)
+  // DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
+  int s = GETLENGTH(lenet->weight5_6);  // 120
+  s = GETLENGTH(*lenet->weight5_6);     // 10
+  s = GETCOUNT(errors->layer5);         // 120
+  s = GETLENGTH(errors->output);        // 10
+
+  for (int x = 0; x < GETLENGTH(lenet->weight5_6); ++x)     // 120
+    for (int y = 0; y < GETLENGTH(*lenet->weight5_6); ++y)  // 10
+      ((double *)errors->layer5)[x] += ((double *)errors->output)[y] * lenet->weight5_6[x][y];
+
+  for (int i = 0; i < GETCOUNT(errors->layer5); ++i) // 120
+    ((double *)errors->layer5)[i] *= actiongrad(((double *)features->layer5)[i]);
+
+  for (int j = 0; j < GETLENGTH(errors->output); ++j) // 10
+    deltas->bias5_6[j] += ((double *)errors->output)[j];
+
+  for (int x = 0; x < GETLENGTH(lenet->weight5_6); ++x) // 120
+    for (int y = 0; y < GETLENGTH(*lenet->weight5_6); ++y) // 10
+      deltas->weight5_6[x][y] += ((double *)features->layer5)[x] * ((double *)errors->output)[y];
+}
+
 #define DOT_PRODUCT_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)	\
 {																				\
 	for (int x = 0; x < GETLENGTH(weight); ++x)									\
@@ -202,8 +270,7 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double))
 {
   const int output_size = GETLENGTH(features->layer1);
   CONVOLUTION_FORWARD(features->input, features->layer1, lenet->weight0_1, lenet->bias0_1, action);
-
-  
+    
 #ifdef SAVE_LAYER1
   FILE* image_file = NULL;
   image_file = fopen("layer1.bin", "wb");
@@ -241,7 +308,7 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double))
   fclose(image_file);
 #endif
 	DOT_PRODUCT_FORWARD(features->layer5, features->output, lenet->weight5_6, lenet->bias5_6, action);
-#ifndef SAVE_OUTPUT
+#ifdef SAVE_OUTPUT
   FILE* image_file = NULL;
   image_file = fopen("output.bin", "wb");
   fwrite(features->output, sizeof(double), 10, image_file);
@@ -252,7 +319,9 @@ static void forward(LeNet5 *lenet, Feature *features, double(*action)(double))
 static void backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Feature *features, double(*actiongrad)(double))
 {
 	DOT_PRODUCT_BACKWARD(features->layer5, errors->layer5, errors->output, lenet->weight5_6, deltas->weight5_6, deltas->bias5_6, actiongrad);
-	CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
+  //dot_product_backward(lenet, deltas, errors, features, actiongrad);
+  convolution_backward(lenet, deltas, errors, features, actiongrad);
+	//CONVOLUTION_BACKWARD(features->layer4, errors->layer4, errors->layer5, lenet->weight4_5, deltas->weight4_5, deltas->bias4_5, actiongrad);
 	SUBSAMP_MAX_BACKWARD(features->layer3, errors->layer3, errors->layer4);
 	CONVOLUTION_BACKWARD(features->layer2, errors->layer2, errors->layer3, lenet->weight2_3, deltas->weight2_3, deltas->bias2_3, actiongrad);
 	SUBSAMP_MAX_BACKWARD(features->layer1, errors->layer1, errors->layer2);
