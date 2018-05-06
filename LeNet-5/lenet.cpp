@@ -16,6 +16,23 @@ char buffer_out[256];
 
 #define FOREACH(i,count) for (int i = 0; i < count; ++i)
 
+void convolute_valid(LeNet5 *deltas, Feature *errors, Feature *features, int x, int y)
+{
+  // CONVOLUTE_VALID(input,               output,                  weight)
+  // CONVOLUTE_VALID(features->layer4[x], deltas->weight4_5[x][y], errors->layer5[y])
+  int s = GETLENGTH(deltas->weight4_5[x][y]); // 5
+  s = GETLENGTH(*(deltas->weight4_5[x][y])); // 5
+  s = GETLENGTH(errors->layer5[y]); // 1
+  s = GETLENGTH(*(errors->layer5[y])); // 1
+
+  for (int o0 = 0; o0 < GETLENGTH(deltas->weight4_5[x][y]); ++o0)
+    for (int o1 = 0; o1 < GETLENGTH(*(deltas->weight4_5[x][y])); ++o1)
+      for (int w0 = 0; GETLENGTH(errors->layer5[y]); ++w0)
+        for (int w1 = 0; w1 < GETLENGTH(*(errors->layer5[y])); ++w1) {
+          (deltas->weight4_5[x][y])[o0][o1] += (features->layer4[x])[o0 + w0][o1 + w1] * (errors->layer5[y])[w0][w1];
+        }
+}
+
 #define CONVOLUTE_VALID(input,output,weight)											\
 {																						\
 	FOREACH(o0,GETLENGTH(output))														\
@@ -149,7 +166,8 @@ void convolution_backward(LeNet5 *lenet, LeNet5 *deltas, Feature *errors, Featur
 
   for (int x = 0; x < GETLENGTH(lenet->weight4_5); ++x)     // 16
     for (int y = 0; y < GETLENGTH(*lenet->weight4_5); ++y)  // 120
-      CONVOLUTE_VALID(features->layer4[x], deltas->weight4_5[x][y], errors->layer5[y]);
+      convolute_valid(deltas, errors, features, x, y);
+      //CONVOLUTE_VALID(features->layer4[x], deltas->weight4_5[x][y], errors->layer5[y]);
 }
 
 #define CONVOLUTION_BACKWARD(input,inerror,outerror,weight,wd,bd,actiongrad)\
